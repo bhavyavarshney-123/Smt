@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/blake2b"
 	"hash"
+	"log"
 )
 
 //constant Defining the right side of the tree as 1.
@@ -18,14 +20,32 @@ var DefaultVal []byte
 //SparseMerkleTree is the struct defining sparse Merkle Tree.
 type SparseMerkleTree struct {
 	st            SmtHasher
-	nodes, values MapDb
-	root          []byte
+	values, nodes MapDb
+	root          *SparseMerkleNode
 }
 
 type SparseMerkleNode struct {
-	left  *SparseMerkleNode
-	right *SparseMerkleNode
-	value []byte
+	Left  *SparseMerkleNode
+	Right *SparseMerkleNode
+	data  []byte
+}
+
+//NewSparseMerkleNode for creating a new merkle Node
+func NewSparseMerkleNode(left, right *SparseMerkleNode, data []byte) *SparseMerkleNode {
+	node := &SparseMerkleNode{}
+	if left == nil && right == nil {
+		hash := blake2b.Sum256(data)
+		node.data = hash[:]
+	} else {
+		prevHashes := append(left.data, right.data...)
+		hash := blake2b.Sum256(prevHashes)
+		node.data = hash[:]
+
+	}
+	node.Left = left
+	node.Right = right
+
+	return node
 }
 
 //Option is a function that configures Smt.
@@ -43,18 +63,18 @@ func NewSparseMerkleTree(nodes, values MapDb, hasher hash.Hash, opts ...Option) 
 		opt(&smt)
 	}
 
-	smt.SetRoot(smt.st.EmptyPlace())
+	smt.SetRoot(nil)
 
 	return &smt
 }
 
 // GetRoot gets the root of the tree.
-func (smt *SparseMerkleTree) GetRoot() []byte {
+func (smt *SparseMerkleTree) GetRoot() *SparseMerkleNode {
 	return smt.root
 }
 
 // SetRoot sets the root of the tree.
-func (smt *SparseMerkleTree) SetRoot(root []byte) *SparseMerkleTree {
+func (smt *SparseMerkleTree) SetRoot(root *SparseMerkleNode) *SparseMerkleTree {
 	if smt.root == nil {
 		smt.root = root
 	} else {
@@ -65,27 +85,57 @@ func (smt *SparseMerkleTree) SetRoot(root []byte) *SparseMerkleTree {
 }
 
 //cache function insert that insert the data into sparse merkle Tree
-func (n *SparseMerkleNode) insert(value []byte) {
+func insert(left, right *SparseMerkleNode, data []byte) *SparseMerkleNode {
 
-	if value == nil {
-		return
-	} else if bytes.Compare(value, n.value) == -1 || bytes.Compare(value, n.value) == 0 {
-		//if data is less than the root data then insert data to left node.
-		if n.left == nil {
-			n.left = &SparseMerkleNode{value: value, left: nil, right: nil}
-
-		} else {
-			n.left.insert(value)
-
-		}
-		//otherwise to right node.
+	node := &SparseMerkleNode{}
+	if left == nil && right == nil {
+		hash := blake2b.Sum256(data)
+		node.data = hash[:]
 	} else {
-		if n.right == nil {
-			n.right = &SparseMerkleNode{value: value, left: nil, right: nil}
-		} else {
-			n.right.insert(value)
+		prevHashes := append(left.data, right.data...)
+		hash := blake2b.Sum256(prevHashes)
+		node.data = hash[:]
+
+	}
+	node.Left = left
+	node.Right = right
+
+	return node
+}
+
+func NewMerkleTree(data [][]byte) *SparseMerkleTree {
+	var nodes []SparseMerkleNode
+	if len(data)%2 != 0 {
+		data = append(data, data[len(data)-1])
+	}
+	for _, dat := range data {
+		node := insert(nil, nil, dat)
+		nodes = append(nodes, *node)
+
+	}
+
+	for len(nodes) == 0 {
+		log.Panic("no merkle nodes")
+	}
+
+	for len(nodes) > 1 {
+		if len(nodes)%2 != 0 {
+			nodes = append(nodes, nodes[len(nodes)-1])
 		}
 	}
+
+	var level []SparseMerkleNode
+
+	for j := 0; j < len(nodes); j += 2 {
+		node := insert(&nodes[j], &nodes[j+1], nil)
+		level = append(level, *node)
+	}
+
+	nodes = level
+
+	tree := SparseMerkleTree{root: &nodes[0]}
+
+	return &tree
 }
 
 //Depth for the dept of the Sparse Merkle Tree
@@ -98,7 +148,7 @@ func (smt *SparseMerkleTree) Get(key []byte) ([]byte, error) {
 	// Get tree's root
 	root := smt.GetRoot()
 
-	if bytes.Equal(root, smt.st.EmptyPlace()) {
+	if root == nil {
 		// The tree is empty, return the default value.
 		return DefaultVal, nil
 	}
@@ -128,11 +178,14 @@ func (smt *SparseMerkleTree) Check(key []byte) (bool, error) {
 
 // Update sets a new value for a key in the tree, and sets and returns the new root of the tree.
 func (smt *SparseMerkleTree) Update(key []byte, value []byte) ([]byte, error) {
-	newRoot, err := smt.RootUpdate(key, value, smt.GetRoot())
+	getroot := GobEncode(*smt.GetRoot())
+	newRoot, err := smt.RootUpdate(key, value, getroot)
 	if err != nil {
 		return nil, err
 	}
-	smt.SetRoot(newRoot)
+	var root *SparseMerkleNode
+	setroot := GobDecode(newRoot, root)
+	smt.SetRoot(setroot)
 	return newRoot, nil
 }
 
@@ -284,7 +337,7 @@ func (smt *SparseMerkleTree) UpdateNodes(path, OldLeafValue []byte, value []byte
 	} else if oldValueHash != nil {
 		// Short-circuit if the same value is being set
 		if bytes.Equal(oldValueHash, valueHash) {
-			return smt.root, nil
+			return GobEncode(*smt.root), nil
 		}
 		// If an old leaf exists, remove it
 		if err := smt.nodes.Delete(pathNodes[0]); err != nil {

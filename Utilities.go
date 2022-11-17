@@ -1,5 +1,12 @@
 package smt
 
+import (
+	"bytes"
+	"encoding/gob"
+	"fmt"
+	"log"
+)
+
 // getBitFromMSB gets the bit at an offset from the most significant bit
 func getBitFromMSB(data []byte, position int) int {
 	if int(data[position/8])&(1<<(8-1-uint(position)%8)) > 0 {
@@ -52,4 +59,30 @@ func reverseByteSlices(slices [][]byte) [][]byte {
 	}
 
 	return slices
+}
+
+//GobEncode encodes the given data
+func GobEncode(node SparseMerkleNode) []byte {
+	var network bytes.Buffer        // Stand-in for a network connection
+	enc := gob.NewEncoder(&network) // Will write to network.
+	err := enc.Encode(node)
+	if err != nil {
+		log.Fatal("encode error:", err)
+	}
+
+	return network.Bytes()
+}
+
+//GobDecode decodes the bytes into data
+func GobDecode(data []byte, node *SparseMerkleNode) *SparseMerkleNode {
+	//Declare a new reader from the data and a new gob Decoder
+	reader := bytes.NewReader(data)
+	decoder := gob.NewDecoder(reader)
+	println(decoder)
+	//Decode the data into object
+	if err := decoder.Decode(&node); err != nil {
+		log.Fatal("decode error:", err)
+	}
+	fmt.Println(node)
+	return node
 }
